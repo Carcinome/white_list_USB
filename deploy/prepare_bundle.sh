@@ -10,6 +10,15 @@
 #
 # Usage : ./prepare_bundle.sh [output_folder]      (default / défaut : ./bundle)
 # Langue / Language : USB_WHITELIST_LANG=fr|en  (default: system locale / sinon langue du système)
+#
+# FR : Dépôts : l'OS custom les désactive. Ce script active, POUR SES SEULES
+#      COMMANDES (--enablerepo), les dépôts de USB_WHITELIST_REPOS. Rien n'est
+#      modifié dans /etc/yum.repos.d. Défaut : "ol9_baseos_latest ol9_appstream".
+#      USB_WHITELIST_REPOS="" = n'en activer aucun (dépôts déjà actifs).
+# EN : Repositories: the custom OS disables them. This script enables, FOR ITS
+#      OWN COMMANDS ONLY (--enablerepo), the repos in USB_WHITELIST_REPOS.
+#      Nothing is changed in /etc/yum.repos.d. Default: "ol9_baseos_latest
+#      ol9_appstream". USB_WHITELIST_REPOS="" = enable none (already active).
 
 # FR : -e  arrêt à la première commande en erreur
 #      -u  une variable non définie est une erreur (évite les fautes de frappe)
@@ -31,6 +40,21 @@ esac
 say() { if [[ $LANG_CODE == en ]]; then echo "$2"; else echo "$1"; fi; }
 
 # --------------------------------------------------------------------------
+# Dépôts à activer / Repositories to enable
+# --------------------------------------------------------------------------
+# FR : ${VAR-défaut} (sans « : ») n'applique le défaut que si VAR n'est PAS
+#      définie ; une variable définie mais vide veut dire « aucun dépôt ».
+#      Chaque nom devient une option --enablerepo=<nom>, passée à dnf plus bas.
+# EN : ${VAR-default} (without ":") applies the default only when VAR is NOT
+#      set; a variable set but empty means "no repository".
+#      Each name becomes a --enablerepo=<name> option, passed to dnf below.
+REPOS="${USB_WHITELIST_REPOS-ol9_baseos_latest ol9_appstream}"
+ENABLE_ARGS=()
+for r in $REPOS; do
+    ENABLE_ARGS+=("--enablerepo=$r")
+done
+
+# --------------------------------------------------------------------------
 # Paramètres / Parameters
 # --------------------------------------------------------------------------
 DEST="${1:-./bundle}"
@@ -49,7 +73,7 @@ mkdir -p "$DEST/rpms"
 if ! dnf download --help >/dev/null 2>&1; then
     say "[1/4] Installation du plugin dnf-plugins-core..." \
         "[1/4] Installing the dnf-plugins-core plugin..."
-    dnf -y install dnf-plugins-core >/dev/null
+    dnf -y "${ENABLE_ARGS[@]}" install dnf-plugins-core >/dev/null
 else
     say "[1/4] Plugin 'dnf download' déjà présent." \
         "[1/4] 'dnf download' plugin already present."
@@ -81,7 +105,7 @@ say "[2/4] Vérification des paquets dans les dépôts..." \
 for p in "${WANTED[@]}"; do
     # FR : repoquery affiche une ligne par version trouvée ; vide = inconnu.
     # EN : repoquery prints one line per version found; empty = unknown.
-    if [[ -n "$(dnf -q repoquery "$p" 2>/dev/null)" ]]; then
+    if [[ -n "$(dnf -q "${ENABLE_ARGS[@]}" repoquery "$p" 2>/dev/null)" ]]; then
         PKGS+=("$p")
     else
         say "  [!] $p introuvable dans les dépôts : ignoré" \
@@ -116,7 +140,23 @@ fi
 #      --destdir  destination folder for the .rpm files
 say "[3/4] Téléchargement (avec toutes les dépendances)..." \
     "[3/4] Downloading (with all dependencies)..."
-dnf download --resolve --alldeps --destdir "$DEST/rpms" "${PKGS[@]}"
+dnf "${ENABLE_ARGS[@]}" download --resolve --alldeps \
+    --destdir "$DEST/rpms" "${PKGS[@]}"
+
+# FR : Les dépôts proposent aussi des builds 32 bits (i686) par compatibilité.
+#      Notre poste est en x86_64 : on les écarte pour ne pas gonfler le
+#      bundle ni installer de bibliothèques inutiles.
+# EN : The repositories also offer 32-bit (i686) builds for compatibility.
+#      Our workstation is x86_64: we discard them so the bundle stays small
+#      and no useless libraries get installed.
+shopt -s nullglob
+I686=("$DEST"/rpms/*.i686.rpm)
+shopt -u nullglob
+if [[ ${#I686[@]} -gt 0 ]]; then
+    rm -f "${I686[@]}"
+    say "  ${#I686[@]} paquet(s) i686 écarté(s)." \
+        "  ${#I686[@]} i686 package(s) discarded."
+fi
 
 # --------------------------------------------------------------------------
 # 4. Empreintes + copie de l'outil / Checksums + copying the tool
