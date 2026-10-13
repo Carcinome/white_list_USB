@@ -825,17 +825,29 @@ def cmd_menu(_: argparse.Namespace) -> None:
 # 7. Point d'entrée / Entry point
 # --------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
+    # FR : L'option --lang est déclarée dans un "parent" partagé, pour être
+    #      acceptée AVANT ou APRÈS la commande : `--lang en list` comme
+    #      `list --lang en`. Sa valeur est lue par _initial_language(), d'où
+    #      SUPPRESS (le parseur complet n'a pas à la stocker).
+    # EN : The --lang option is declared in a shared "parent", so it is
+    #      accepted BEFORE or AFTER the command: `--lang en list` as well as
+    #      `list --lang en`. Its value is read by _initial_language(), hence
+    #      SUPPRESS (the full parser does not need to store it).
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--lang", choices=LANGUAGES, default=argparse.SUPPRESS,
+                        help=t("help_lang"))
     parser = argparse.ArgumentParser(
         prog="usb-whitelist",
         description=t("help_description"),
+        parents=[common],
     )
-    parser.add_argument("--lang", choices=LANGUAGES, help=t("help_lang"))
     sub = parser.add_subparsers(dest="command")
-    sub.add_parser("devices", help=t("help_devices")).set_defaults(func=cmd_devices)
-    sub.add_parser("list", help=t("help_list")).set_defaults(func=cmd_list)
-    sub.add_parser("status", help=t("help_status")).set_defaults(func=cmd_status)
+    for name, func in (("devices", cmd_devices), ("list", cmd_list),
+                       ("status", cmd_status)):
+        sub.add_parser(name, help=t(f"help_{name}"), parents=[common]) \
+            .set_defaults(func=func)
     for name, func in (("add", cmd_add), ("remove", cmd_remove)):
-        p = sub.add_parser(name, help=t(f"help_{name}"))
+        p = sub.add_parser(name, help=t(f"help_{name}"), parents=[common])
         p.add_argument("number", nargs="?", type=int, help=t("help_number"))
         p.set_defaults(func=func)
     return parser

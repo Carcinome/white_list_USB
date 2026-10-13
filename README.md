@@ -95,8 +95,8 @@ python -m unittest discover -s tests -v    # logique pure, sans usbguard
 ```
 
 Ils couvrent la lecture des sorties usbguard, la construction des règles
-(dont l'injection par un nom de clé piégé) et la cohérence des traductions
-FR/EN.
+(dont l'injection par un nom de clé piégé), le contrôle d'appartenance à
+`wheel` (cas sudo, root, groupe absent…) et la cohérence des traductions FR/EN.
 
 ## 7. À vérifier lors du premier essai sur la VM
 
@@ -210,7 +210,8 @@ python -m unittest discover -s tests -v    # pure logic, no usbguard needed
 ```
 
 They cover parsing of usbguard output, rule building (including injection
-through a booby-trapped key name) and consistency of the FR/EN translations.
+through a booby-trapped key name), the `wheel` membership check (sudo, root,
+missing group…) and consistency of the FR/EN translations.
 
 ## 7. To check on the first VM run
 

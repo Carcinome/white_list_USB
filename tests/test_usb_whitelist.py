@@ -1,12 +1,20 @@
-"""Tests de la logique pure (parsing, construction de règle).
+"""Tests de la logique pure de usb_whitelist.py.
+Tests for the pure logic of usb_whitelist.py.
 
-Ils ne lancent jamais usbguard : on peut les exécuter n'importe où.
+FR : Ces tests ne lancent JAMAIS usbguard et ne touchent pas au système : on
+     peut les exécuter n'importe où (même sous Windows). Les parties Unix
+     (groupes, utilisateurs) sont simulées avec des faux modules.
+EN : These tests NEVER run usbguard and never touch the system: they can run
+     anywhere (even on Windows). The Unix parts (groups, users) are simulated
+     with fake modules.
+
     python -m unittest discover -s tests -v
 """
 import io
 import os
 import re
 import sys
+import types
 import unittest
 from contextlib import redirect_stdout
 from unittest import mock
@@ -14,11 +22,15 @@ from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import usb_whitelist as uw  # noqa: E402
 
+# FR : Une vraie ligne de `usbguard list-devices` (modèle de nos tests).
+# EN : A realistic `usbguard list-devices` line (the model for our tests).
 DEVICE_LINE = (
     '7: block id 0781:5581 serial "4C530001" name "Ultra USB 3.0" '
     'hash "Xy/abc+1=" parent-hash "Pq9=" via-port "2-1" '
     'with-interface { 08:06:50 } with-connect-type "hotplug"'
 )
+# FR : Trois lignes : un hub racine, une clé, un clavier (2 interfaces).
+# EN : Three lines: a root hub, a key, a keyboard (2 interfaces).
 SAMPLE = (
     '1: allow id 1d6b:0002 serial "0000:00:14.0" name "xHCI Host Controller" '
     'hash "h1" parent-hash "p1" via-port "usb1" with-interface 09:00:00 '
@@ -31,7 +43,12 @@ SAMPLE = (
 
 
 class ParseTests(unittest.TestCase):
+    """Lecture des lignes usbguard. / Reading usbguard lines."""
+
     def test_champs_de_base(self):
+        """Tous les champs utiles sont extraits.
+        All useful fields are extracted.
+        """
         e = uw.parse_line(DEVICE_LINE)
         self.assertEqual((e.num, e.target), (7, "block"))
         self.assertEqual(e.vid_pid, "0781:5581")
@@ -42,37 +59,63 @@ class ParseTests(unittest.TestCase):
         self.assertTrue(e.is_storage)
 
     def test_interface_simple_sans_accolades(self):
+        """`with-interface 09:00:00` (sans accolades) est compris.
+        `with-interface 09:00:00` (no braces) is understood.
+        """
         e = uw.parse_output(SAMPLE)[0]
         self.assertEqual(e.interfaces, ["09:00:00"])
         self.assertTrue(e.is_root_hub)
 
     def test_plusieurs_interfaces_clavier(self):
+        """Un clavier déclare plusieurs interfaces ; ce n'est pas du stockage.
+        A keyboard declares several interfaces; it is not storage.
+        """
         e = uw.parse_output(SAMPLE)[2]
         self.assertEqual(e.interfaces, ["03:01:01", "03:00:00"])
         self.assertEqual(e.serial, "")
         self.assertFalse(e.is_storage)
+        uw.set_language("fr")
         self.assertIn("HID", e.kind)
 
     def test_operateur_with_interface(self):
+        """Un opérateur (all-of, one-of...) devant les accolades est ignoré.
+        An operator (all-of, one-of...) before the braces is skipped.
+        """
         e = uw.parse_line('3: allow id 1234:5678 with-interface all-of { 08:*:* }')
         self.assertEqual(e.interfaces, ["08:*:*"])
 
     def test_guillemets_echappes_dans_le_nom(self):
+        """Un nom contenant des guillemets échappés est relu tel quel.
+        A name containing escaped quotes is read back unchanged.
+        """
         e = uw.parse_line(r'4: block id 1234:5678 name "Cle \"pro\"" hash "h"')
         self.assertEqual(e.name, 'Cle "pro"')
 
     def test_valeur_qui_ressemble_a_un_mot_cle(self):
-        # Le nom vaut littéralement "id" : il ne doit pas être pris pour un champ.
+        """Un nom valant littéralement "id" n'est pas pris pour le champ id.
+        A name that is literally "id" is not mistaken for the id field.
+        """
         e = uw.parse_line('5: block id 1234:5678 name "id" hash "h"')
         self.assertEqual((e.name, e.vid_pid), ("id", "1234:5678"))
 
     def test_ligne_invalide(self):
+        """Une ligne qui n'est pas du usbguard est ignorée, sans erreur.
+        A line that is not usbguard output is ignored, without error.
+        """
         self.assertIsNone(uw.parse_line("pas une ligne usbguard"))
         self.assertEqual(len(uw.parse_output(SAMPLE)), 3)
 
 
 class RuleTests(unittest.TestCase):
+    """Construction des règles `allow`. / Building `allow` rules."""
+
+    def setUp(self):
+        uw.set_language("fr")
+
     def test_regle_sans_port(self):
+        """La règle contient id/série/nom/empreinte, et PAS de via-port.
+        The rule holds id/serial/name/hash, and NO via-port.
+        """
         rule = uw.build_allow_rule(uw.parse_line(DEVICE_LINE))
         self.assertEqual(
             rule,
@@ -82,53 +125,150 @@ class RuleTests(unittest.TestCase):
         self.assertNotIn("via-port", rule)
 
     def test_regle_relue_identique(self):
+        """Écrire puis relire une règle redonne le même matériel.
+        Writing then re-reading a rule gives back the same hardware.
+        """
         dev = uw.parse_line(DEVICE_LINE)
         back = uw.parse_line("9: " + uw.build_allow_rule(dev))
         self.assertTrue(uw.same_device(dev, back))
 
     def test_injection_via_nom_impossible(self):
+        """Un nom piégé ne peut pas fabriquer une 2e règle (ex. tout autoriser).
+        A booby-trapped name cannot forge a second rule (e.g. allow all).
+        """
         dev = uw.parse_line(DEVICE_LINE)
         dev.name = 'x" allow id *:* hash "'
         rule = uw.build_allow_rule(dev)
         back = uw.parse_line("9: " + rule)
-        self.assertEqual(back.vid_pid, "0781:5581")   # pas écrasé
-        self.assertEqual(back.name, dev.name)          # tout est resté dans le nom
+        self.assertEqual(back.vid_pid, "0781:5581")   # pas écrasé / not overwritten
+        self.assertEqual(back.name, dev.name)          # tout reste dans le nom / all stays in the name
 
     def test_refus_sans_hash(self):
+        """Sans empreinte, on refuse : la règle serait trop permissive.
+        Without a fingerprint we refuse: the rule would be too permissive.
+        """
         dev = uw.parse_line(DEVICE_LINE)
         dev.hash = ""
         with self.assertRaises(uw.UsbGuardError):
             uw.build_allow_rule(dev)
 
     def test_refus_id_invalide(self):
+        """Un id joker (*:*) est refusé. A wildcard id (*:*) is refused."""
         dev = uw.parse_line(DEVICE_LINE)
         dev.vid_pid = "*:*"
         with self.assertRaises(uw.UsbGuardError):
             uw.build_allow_rule(dev)
 
     def test_refus_caractere_de_controle(self):
+        """Un retour à la ligne dans une valeur est refusé.
+        A newline inside a value is refused.
+        """
         dev = uw.parse_line(DEVICE_LINE)
         dev.serial = "ab\ncd"
         with self.assertRaises(uw.UsbGuardError):
             uw.build_allow_rule(dev)
 
 
+class WheelTests(unittest.TestCase):
+    """Contrôle d'appartenance à wheel (la fonction de sécurité clé).
+    wheel membership check (the key security function).
+
+    FR : On simule l'OS : faux modules grp/pwd et fausses fonctions os.*.
+         Les nombres sont des identifiants de groupe (gid) : 10 = wheel.
+    EN : We simulate the OS: fake grp/pwd modules and fake os.* functions.
+         Numbers are group ids (gid): 10 = wheel.
+    """
+
+    def check(self, *, euid, wheel_gid=10, egid=1000, groups=(), env=None,
+              user_groups=()):
+        def getgrnam(name):
+            if wheel_gid is None:
+                raise KeyError(name)
+            return types.SimpleNamespace(gr_gid=wheel_gid)
+
+        fake_grp = types.SimpleNamespace(getgrnam=getgrnam)
+        fake_pwd = types.SimpleNamespace(
+            getpwnam=lambda n: types.SimpleNamespace(pw_gid=1000))
+        with mock.patch.dict(sys.modules, {"grp": fake_grp, "pwd": fake_pwd}), \
+                mock.patch.dict(os.environ, env or {}, clear=True), \
+                mock.patch.object(os, "geteuid", lambda: euid, create=True), \
+                mock.patch.object(os, "getegid", lambda: egid, create=True), \
+                mock.patch.object(os, "getgroups", lambda: list(groups), create=True), \
+                mock.patch.object(os, "getgrouplist",
+                                  lambda u, g: list(user_groups), create=True):
+            return uw.is_wheel_member()
+
+    def test_utilisateur_dans_wheel(self):
+        """Utilisateur normal, wheel parmi ses groupes : accepté.
+        Normal user with wheel among its groups: accepted.
+        """
+        self.assertTrue(self.check(euid=1000, groups=[1000, 10]))
+
+    def test_utilisateur_hors_wheel(self):
+        """Utilisateur normal sans wheel : refusé. Normal user without wheel: refused."""
+        self.assertFalse(self.check(euid=1000, groups=[1000, 5]))
+
+    def test_groupe_principal_wheel(self):
+        """wheel comme groupe principal compte aussi.
+        wheel as the primary group counts too.
+        """
+        self.assertTrue(self.check(euid=1000, egid=10, groups=[]))
+
+    def test_sudo_depuis_wheel(self):
+        """root via sudo, l'appelant d'origine est dans wheel : accepté.
+        root via sudo, the original caller is in wheel: accepted.
+        """
+        self.assertTrue(self.check(euid=0, env={"SUDO_USER": "alice"},
+                                   user_groups=[1000, 10]))
+
+    def test_sudo_hors_wheel(self):
+        """root via sudo, mais l'appelant d'origine n'est PAS dans wheel : refusé.
+        root via sudo, but the original caller is NOT in wheel: refused.
+        """
+        self.assertFalse(self.check(euid=0, env={"SUDO_USER": "bob"},
+                                    user_groups=[1000]))
+
+    def test_root_direct_autorise_par_defaut(self):
+        """Vraie session root (pas de SUDO_USER) : autorisée si ALLOW_ROOT.
+        Genuine root session (no SUDO_USER): allowed if ALLOW_ROOT.
+        """
+        self.assertTrue(self.check(euid=0))
+        with mock.patch.object(uw, "ALLOW_ROOT", False):
+            self.assertFalse(self.check(euid=0))
+
+    def test_pas_de_groupe_wheel(self):
+        """Si le groupe wheel n'existe pas : on refuse par prudence.
+        If the wheel group does not exist: refuse, to be safe.
+        """
+        self.assertFalse(self.check(euid=1000, wheel_gid=None, groups=[10]))
+
+    def test_sudo_user_ignore_si_pas_root(self):
+        """Un utilisateur normal ne gagne rien en forgeant SUDO_USER.
+        A normal user gains nothing by forging SUDO_USER.
+        """
+        self.assertFalse(self.check(euid=1000, groups=[1000],
+                                    env={"SUDO_USER": "alice"},
+                                    user_groups=[10]))
+
+
 class TranslationTests(unittest.TestCase):
-    """FR : le catalogue fr/en doit rester synchronisé.
-    EN : the fr/en catalog must stay in sync.
+    """Le catalogue fr/en doit rester synchronisé.
+    The fr/en catalog must stay in sync.
     """
 
     def tearDown(self):
         uw.set_language("fr")
 
     def test_memes_cles(self):
+        """Toute clé existe dans les deux langues. Every key exists in both languages."""
         fr, en = set(uw.MESSAGES["fr"]), set(uw.MESSAGES["en"])
         self.assertEqual(fr - en, set(), "missing in en")
         self.assertEqual(en - fr, set(), "missing in fr")
 
     def test_memes_trous(self):
-        # FR : {nom} doit exister dans les deux langues, sinon format() plante.
-        # EN : {name} must exist in both languages, otherwise format() fails.
+        """Les {trous} sont identiques, sinon format() planterait.
+        The {placeholders} are identical, otherwise format() would fail.
+        """
         hole = re.compile(r"\{(\w+)\}")
         for key in uw.MESSAGES["fr"]:
             self.assertEqual(
@@ -138,21 +278,27 @@ class TranslationTests(unittest.TestCase):
             )
 
     def test_aucun_texte_vide(self):
+        """Aucune traduction oubliée (chaîne vide). No forgotten (empty) translation."""
         for lang in uw.LANGUAGES:
             for key, text in uw.MESSAGES[lang].items():
                 self.assertTrue(text.strip(), f"{lang}.{key}")
 
     def test_changement_de_langue(self):
+        """set_language() change bien le texte rendu.
+        set_language() really changes the rendered text.
+        """
         uw.set_language("en")
         self.assertEqual(uw.t("cancelled"), "Cancelled.")
         uw.set_language("fr")
         self.assertEqual(uw.t("cancelled"), "Annulé.")
 
     def test_langue_inconnue_retombe_sur_francais(self):
+        """Langue inconnue : repli sur le français. Unknown language: fall back to French."""
         uw.set_language("de")
         self.assertEqual(uw.t("cancelled"), "Annulé.")
 
     def test_type_de_peripherique_traduit(self):
+        """Le type affiché suit la langue. The displayed type follows the language."""
         dev = uw.parse_line(DEVICE_LINE)
         uw.set_language("fr")
         self.assertIn("stockage", dev.kind)
@@ -160,19 +306,37 @@ class TranslationTests(unittest.TestCase):
         self.assertIn("storage", dev.kind)
 
     def test_menu_de_langue(self):
-        with mock.patch("builtins.input", return_value="2"),                 redirect_stdout(io.StringIO()):
+        """Le menu de langue : 2 = anglais, 1 = français.
+        The language menu: 2 = English, 1 = French.
+        """
+        with mock.patch("builtins.input", return_value="2"), \
+                redirect_stdout(io.StringIO()):
             uw.choose_language()
         self.assertEqual(uw.t("cancelled"), "Cancelled.")
-        with mock.patch("builtins.input", return_value="1"),                 redirect_stdout(io.StringIO()):
+        with mock.patch("builtins.input", return_value="1"), \
+                redirect_stdout(io.StringIO()):
             uw.choose_language()
         self.assertEqual(uw.t("cancelled"), "Annulé.")
 
     def test_option_lang_prioritaire_sur_environnement(self):
+        """--lang l'emporte sur USB_WHITELIST_LANG ; sans les deux : None.
+        --lang beats USB_WHITELIST_LANG; with neither: None.
+        """
         with mock.patch.dict(os.environ, {"USB_WHITELIST_LANG": "fr"}):
             self.assertEqual(uw._initial_language(["--lang", "en", "list"]), "en")
             self.assertEqual(uw._initial_language(["list"]), "fr")
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertIsNone(uw._initial_language(["list"]))
+
+    def test_lang_accepte_avant_ou_apres_la_commande(self):
+        """`--lang en list` et `list --lang en` sont tous deux valides.
+        Both `--lang en list` and `list --lang en` are valid.
+        """
+        parser = uw.build_parser()
+        for argv in (["--lang", "en", "list"], ["list", "--lang", "en"],
+                     ["add", "--lang", "en", "7"]):
+            parser.parse_args(argv)  # ne doit pas lever / must not raise
+        self.assertEqual(uw._initial_language(["list", "--lang", "en"]), "en")
 
 
 if __name__ == "__main__":
