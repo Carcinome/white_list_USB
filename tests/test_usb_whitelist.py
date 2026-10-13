@@ -3,9 +3,13 @@
 Ils ne lancent jamais usbguard : on peut les exécuter n'importe où.
     python -m unittest discover -s tests -v
 """
+import io
 import os
+import re
 import sys
 import unittest
+from contextlib import redirect_stdout
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import usb_whitelist as uw  # noqa: E402
@@ -107,6 +111,68 @@ class RuleTests(unittest.TestCase):
         dev.serial = "ab\ncd"
         with self.assertRaises(uw.UsbGuardError):
             uw.build_allow_rule(dev)
+
+
+class TranslationTests(unittest.TestCase):
+    """FR : le catalogue fr/en doit rester synchronisé.
+    EN : the fr/en catalog must stay in sync.
+    """
+
+    def tearDown(self):
+        uw.set_language("fr")
+
+    def test_memes_cles(self):
+        fr, en = set(uw.MESSAGES["fr"]), set(uw.MESSAGES["en"])
+        self.assertEqual(fr - en, set(), "missing in en")
+        self.assertEqual(en - fr, set(), "missing in fr")
+
+    def test_memes_trous(self):
+        # FR : {nom} doit exister dans les deux langues, sinon format() plante.
+        # EN : {name} must exist in both languages, otherwise format() fails.
+        hole = re.compile(r"\{(\w+)\}")
+        for key in uw.MESSAGES["fr"]:
+            self.assertEqual(
+                set(hole.findall(uw.MESSAGES["fr"][key])),
+                set(hole.findall(uw.MESSAGES["en"][key])),
+                key,
+            )
+
+    def test_aucun_texte_vide(self):
+        for lang in uw.LANGUAGES:
+            for key, text in uw.MESSAGES[lang].items():
+                self.assertTrue(text.strip(), f"{lang}.{key}")
+
+    def test_changement_de_langue(self):
+        uw.set_language("en")
+        self.assertEqual(uw.t("cancelled"), "Cancelled.")
+        uw.set_language("fr")
+        self.assertEqual(uw.t("cancelled"), "Annulé.")
+
+    def test_langue_inconnue_retombe_sur_francais(self):
+        uw.set_language("de")
+        self.assertEqual(uw.t("cancelled"), "Annulé.")
+
+    def test_type_de_peripherique_traduit(self):
+        dev = uw.parse_line(DEVICE_LINE)
+        uw.set_language("fr")
+        self.assertIn("stockage", dev.kind)
+        uw.set_language("en")
+        self.assertIn("storage", dev.kind)
+
+    def test_menu_de_langue(self):
+        with mock.patch("builtins.input", return_value="2"),                 redirect_stdout(io.StringIO()):
+            uw.choose_language()
+        self.assertEqual(uw.t("cancelled"), "Cancelled.")
+        with mock.patch("builtins.input", return_value="1"),                 redirect_stdout(io.StringIO()):
+            uw.choose_language()
+        self.assertEqual(uw.t("cancelled"), "Annulé.")
+
+    def test_option_lang_prioritaire_sur_environnement(self):
+        with mock.patch.dict(os.environ, {"USB_WHITELIST_LANG": "fr"}):
+            self.assertEqual(uw._initial_language(["--lang", "en", "list"]), "en")
+            self.assertEqual(uw._initial_language(["list"]), "fr")
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(uw._initial_language(["list"]))
 
 
 if __name__ == "__main__":

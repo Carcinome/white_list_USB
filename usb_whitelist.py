@@ -20,6 +20,19 @@ EN : The whitelist lives in /etc/usbguard/rules.conf: it belongs to the
      MACHINE, not to a user. It therefore applies to every account, past,
      present and future.
 
+Langue / Language
+-----------------
+FR : Tous les textes affichés sont dans le catalogue MESSAGES (fr / en). Le
+     code n'utilise que des clés : t("added_ok"). La langue se choisit :
+       1. avec l'option --lang fr|en,
+       2. sinon avec la variable d'environnement USB_WHITELIST_LANG,
+       3. sinon, au lancement du menu interactif, via un petit menu.
+EN : Every displayed text lives in the MESSAGES catalog (fr / en). The code
+     only uses keys: t("added_ok"). The language is chosen:
+       1. with the --lang fr|en option,
+       2. otherwise with the USB_WHITELIST_LANG environment variable,
+       3. otherwise, when the interactive menu starts, via a small menu.
+
 Dépendances / Dependencies : standard library only (Python 3.9 on OL9).
 """
 from __future__ import annotations
@@ -30,7 +43,7 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 # --------------------------------------------------------------------------
 # Constantes de configuration / Configuration constants
@@ -57,20 +70,225 @@ ALLOW_ROOT = True
 #      hubs/controllers. They are not USB keys, so we hide them.
 ROOT_HUB_VENDOR = "1d6b"
 
-# FR : Classes USB (premier octet de "with-interface") -> libellé lisible.
-# EN : USB classes (first byte of "with-interface") -> human-readable label.
-USB_CLASSES = {
-    "01": "audio",
-    "03": "clavier/souris (HID)",
-    "07": "imprimante",
-    "08": "stockage (clé/disque)",
-    "09": "hub",
-    "0e": "caméra/vidéo",
-    "e0": "sans fil (Bluetooth...)",
-}
 STORAGE_CLASS = "08"
 
-TARGET_LABELS = {"allow": "AUTORISÉ", "block": "BLOQUÉ", "reject": "REJETÉ"}
+# --------------------------------------------------------------------------
+# Traductions / Translations
+# --------------------------------------------------------------------------
+# FR : {nom} est un trou rempli par t("clé", nom=valeur). Les deux langues
+#      doivent avoir exactement les mêmes clés ET les mêmes trous : un test
+#      (tests/test_usb_whitelist.py) le vérifie.
+# EN : {name} is a placeholder filled by t("key", name=value). Both languages
+#      must have exactly the same keys AND the same placeholders: a test
+#      (tests/test_usb_whitelist.py) checks that.
+LANGUAGES = ("fr", "en")
+DEFAULT_LANG = "fr"
+
+MESSAGES: Dict[str, Dict[str, str]] = {
+    "fr": {
+        # --- erreurs / errors
+        "error_prefix": "Erreur : {msg}",
+        "err_not_installed": "usbguard n'est pas installé (lancer deploy/install.sh).",
+        "err_timeout": "usbguard ne répond pas (démon bloqué ?).",
+        "err_denied": ("accès refusé par le démon USBGuard. Vous êtes-vous "
+                       "reconnecté depuis votre ajout au groupe wheel ?"),
+        "err_no_service": "le service usbguard ne tourne pas (`systemctl status usbguard`).",
+        "err_failed": "usbguard a échoué (code {code}).",
+        "err_control_char": "caractère de contrôle dans une valeur : refusé.",
+        "err_bad_id": "identifiant USB invalide : {value}",
+        "err_no_hash": "le périphérique n'a pas d'empreinte (hash) : refusé.",
+        "err_need_number": "il faut saisir un numéro.",
+        "err_no_item": "aucun élément n°{num} dans la liste ci-dessus.",
+        # --- types de périphériques / device kinds
+        "unknown": "inconnu",
+        "class_01": "audio",
+        "class_03": "clavier/souris (HID)",
+        "class_07": "imprimante",
+        "class_08": "stockage (clé/disque)",
+        "class_09": "hub",
+        "class_0e": "caméra/vidéo",
+        "class_e0": "sans fil (Bluetooth...)",
+        "class_other": "classe {code}",
+        # --- états / states
+        "target_allow": "AUTORISÉ",
+        "target_block": "BLOQUÉ",
+        "target_reject": "REJETÉ",
+        # --- tableaux / tables
+        "col_num": "N°",
+        "col_state": "ÉTAT",
+        "col_id": "ID",
+        "col_type": "TYPE",
+        "col_name": "NOM",
+        "col_serial": "SÉRIE",
+        "no_serial": "(aucun)",
+        # --- saisie / prompts
+        "confirm_hint": "[o/N]",
+        "yes_word": "OUI",
+        "prompt_pick_allow": "Numéro à autoriser (Entrée pour annuler) : ",
+        "prompt_pick_remove": "Numéro à retirer (Entrée pour annuler) : ",
+        "cancelled": "Annulé.",
+        "interrupted": "Interrompu.",
+        # --- commandes / commands
+        "no_devices": "Aucun périphérique USB branché.",
+        "no_blocked": "Aucun périphérique bloqué à autoriser.",
+        "plug_and_retry": "Branchez la clé, puis relancez cette commande.",
+        "whitelist_empty": "La liste blanche est vide.",
+        "warn_not_storage": "ATTENTION : ce n'est pas une clé de stockage mais : {kind}.",
+        "warn_hid_risk": "Un clavier autorisé à tort peut taper des commandes à votre place.",
+        "type_yes_prompt": "Tapez {word} en majuscules pour continuer : ",
+        "note_no_serial": ("Note : cet appareil n'a pas de numéro de série. La règle "
+                           "vaudra pour tous les appareils du même modèle ayant la "
+                           "même empreinte."),
+        "rule_to_add": "Règle à ajouter :",
+        "confirm_add": "Confirmer l'ajout à la liste blanche ?",
+        "added_ok": "OK : périphérique autorisé (définitivement, sur tous les ports).",
+        "warn_remove_hid": ("ATTENTION : c'est un clavier/souris. Le retirer peut vous "
+                            "empêcher de piloter la machine."),
+        "confirm_remove": "Retirer la règle n°{num} ({label}) ?",
+        "removed_ok": "OK : règle retirée.",
+        # --- état du service / service status
+        "status_service": "Service usbguard      : {state}",
+        "status_start_hint": "  -> `sudo systemctl enable --now usbguard` pour le démarrer.",
+        "status_rules": "Règles d'autorisation : {count}",
+        "status_devices": "Périphériques branchés: {count} (dont {blocked} bloqué(s))",
+        "status_user": "Utilisateur           : {user} (groupe {group} : oui)",
+        # --- menu / menus
+        "menu_title": "=== Liste blanche USB ===",
+        "menu_1": "Voir les périphériques branchés",
+        "menu_2": "Autoriser un périphérique bloqué",
+        "menu_3": "Voir la liste blanche",
+        "menu_4": "Retirer un périphérique de la liste blanche",
+        "menu_5": "État du service",
+        "menu_quit": "Quitter",
+        "menu_prompt": "Votre choix : ",
+        "menu_invalid": "Choix invalide.",
+        # --- accès / access
+        "denied": "Accès refusé : cet outil est réservé au groupe « {group} ».",
+        # --- aide en ligne / command-line help
+        "help_description": ("Gestion de la liste blanche USB (réservé au groupe "
+                             "wheel). Sans argument : menu interactif."),
+        "help_lang": "langue des messages : fr ou en",
+        "help_devices": "périphériques branchés et leur état",
+        "help_list": "afficher la liste blanche",
+        "help_status": "état du service",
+        "help_add": "autoriser un périphérique bloqué",
+        "help_remove": "retirer une règle de la liste blanche",
+        "help_number": "numéro affiché dans la liste (sinon on le demande)",
+    },
+    "en": {
+        # --- errors
+        "error_prefix": "Error: {msg}",
+        "err_not_installed": "usbguard is not installed (run deploy/install.sh).",
+        "err_timeout": "usbguard is not responding (daemon stuck?).",
+        "err_denied": ("access denied by the USBGuard daemon. Did you log in again "
+                       "after being added to the wheel group?"),
+        "err_no_service": "the usbguard service is not running (`systemctl status usbguard`).",
+        "err_failed": "usbguard failed (code {code}).",
+        "err_control_char": "control character in a value: refused.",
+        "err_bad_id": "invalid USB identifier: {value}",
+        "err_no_hash": "the device has no fingerprint (hash): refused.",
+        "err_need_number": "a number is required.",
+        "err_no_item": "no item #{num} in the list above.",
+        # --- device kinds
+        "unknown": "unknown",
+        "class_01": "audio",
+        "class_03": "keyboard/mouse (HID)",
+        "class_07": "printer",
+        "class_08": "storage (key/disk)",
+        "class_09": "hub",
+        "class_0e": "camera/video",
+        "class_e0": "wireless (Bluetooth...)",
+        "class_other": "class {code}",
+        # --- states
+        "target_allow": "ALLOWED",
+        "target_block": "BLOCKED",
+        "target_reject": "REJECTED",
+        # --- tables
+        "col_num": "NO.",
+        "col_state": "STATE",
+        "col_id": "ID",
+        "col_type": "TYPE",
+        "col_name": "NAME",
+        "col_serial": "SERIAL",
+        "no_serial": "(none)",
+        # --- prompts
+        "confirm_hint": "[y/N]",
+        "yes_word": "YES",
+        "prompt_pick_allow": "Number to allow (Enter to cancel): ",
+        "prompt_pick_remove": "Number to remove (Enter to cancel): ",
+        "cancelled": "Cancelled.",
+        "interrupted": "Interrupted.",
+        # --- commands
+        "no_devices": "No USB device connected.",
+        "no_blocked": "No blocked device to allow.",
+        "plug_and_retry": "Plug the key in, then run this command again.",
+        "whitelist_empty": "The whitelist is empty.",
+        "warn_not_storage": "WARNING: this is not a storage key but: {kind}.",
+        "warn_hid_risk": "A keyboard allowed by mistake can type commands in your place.",
+        "type_yes_prompt": "Type {word} in capitals to continue: ",
+        "note_no_serial": ("Note: this device has no serial number. The rule will "
+                           "apply to every device of the same model with the same "
+                           "fingerprint."),
+        "rule_to_add": "Rule to add:",
+        "confirm_add": "Confirm adding it to the whitelist?",
+        "added_ok": "OK: device allowed (permanently, on every port).",
+        "warn_remove_hid": ("WARNING: this is a keyboard/mouse. Removing it may "
+                            "leave you unable to control the machine."),
+        "confirm_remove": "Remove rule #{num} ({label})?",
+        "removed_ok": "OK: rule removed.",
+        # --- service status
+        "status_service": "usbguard service      : {state}",
+        "status_start_hint": "  -> `sudo systemctl enable --now usbguard` to start it.",
+        "status_rules": "Allow rules           : {count}",
+        "status_devices": "Connected devices     : {count} ({blocked} blocked)",
+        "status_user": "User                  : {user} ({group} group: yes)",
+        # --- menus
+        "menu_title": "=== USB whitelist ===",
+        "menu_1": "Show connected devices",
+        "menu_2": "Allow a blocked device",
+        "menu_3": "Show the whitelist",
+        "menu_4": "Remove a device from the whitelist",
+        "menu_5": "Service status",
+        "menu_quit": "Quit",
+        "menu_prompt": "Your choice: ",
+        "menu_invalid": "Invalid choice.",
+        # --- access
+        "denied": "Access denied: this tool is restricted to the \"{group}\" group.",
+        # --- command-line help
+        "help_description": ("USB whitelist management (restricted to the wheel "
+                             "group). With no argument: interactive menu."),
+        "help_lang": "message language: fr or en",
+        "help_devices": "connected devices and their state",
+        "help_list": "show the whitelist",
+        "help_status": "service status",
+        "help_add": "allow a blocked device",
+        "help_remove": "remove a rule from the whitelist",
+        "help_number": "number shown in the list (asked for if omitted)",
+    },
+}
+
+# FR : Langue active. Modifiée uniquement par set_language().
+# EN : Active language. Only modified by set_language().
+_current_lang = DEFAULT_LANG
+
+
+def set_language(lang: str) -> None:
+    """Choisit la langue d'affichage. / Select the display language."""
+    global _current_lang
+    _current_lang = lang if lang in MESSAGES else DEFAULT_LANG
+
+
+def t(key: str, **values: object) -> str:
+    """Renvoie le texte `key` dans la langue active.
+    Return the text for `key` in the active language.
+
+    FR : Si la clé manque dans la langue active, on retombe sur le français
+         plutôt que de planter au milieu d'une opération.
+    EN : If the key is missing in the active language we fall back to French
+         rather than crash in the middle of an operation.
+    """
+    text = MESSAGES[_current_lang].get(key) or MESSAGES[DEFAULT_LANG][key]
+    return text.format(**values) if values else text
 
 
 class UsbGuardError(Exception):
@@ -138,9 +356,12 @@ def audit(message: str) -> None:
 
     FR : Consultable avec `journalctl -t usb-whitelist`. syslog n'exige aucun
          droit particulier : l'utilisateur wheel peut écrire sans avoir accès
-         à /var/log.
+         à /var/log. Le journal reste en anglais, quelle que soit la langue
+         choisie, pour rester lisible par tous les administrateurs.
     EN : Readable with `journalctl -t usb-whitelist`. syslog needs no special
          privilege: a wheel user can write without having access to /var/log.
+         The journal stays in English whatever the chosen language, so every
+         administrator can read it.
     """
     import syslog
 
@@ -163,25 +384,17 @@ def run_usbguard(*args: str) -> str:
             timeout=20,
         )
     except FileNotFoundError:
-        raise UsbGuardError(
-            "usbguard n'est pas installé (lancer deploy/install.sh)."
-        ) from None
+        raise UsbGuardError(t("err_not_installed")) from None
     except subprocess.TimeoutExpired:
-        raise UsbGuardError("usbguard ne répond pas (démon bloqué ?).") from None
+        raise UsbGuardError(t("err_timeout")) from None
 
     if proc.returncode != 0:
         err = proc.stderr.strip() or proc.stdout.strip()
         if "ermission" in err or "denied" in err:
-            raise UsbGuardError(
-                "accès refusé par le démon USBGuard. Vous êtes-vous reconnecté "
-                "depuis votre ajout au groupe wheel ?"
-            )
+            raise UsbGuardError(t("err_denied"))
         if "connect" in err.lower() or "ipc" in err.lower():
-            raise UsbGuardError(
-                "le service usbguard ne tourne pas "
-                "(`systemctl status usbguard`)."
-            )
-        raise UsbGuardError(err or f"usbguard a échoué (code {proc.returncode}).")
+            raise UsbGuardError(t("err_no_service"))
+        raise UsbGuardError(err or t("err_failed", code=proc.returncode))
     return proc.stdout
 
 
@@ -227,9 +440,12 @@ class Entry:
         Human-readable type derived from the first declared interface.
         """
         if not self.interfaces:
-            return "inconnu"
+            return t("unknown")
         code = self.interfaces[0].split(":")[0].lower()
-        return USB_CLASSES.get(code, f"classe {code}")
+        key = f"class_{code}"
+        if key in MESSAGES[DEFAULT_LANG]:
+            return t(key)
+        return t("class_other", code=code)
 
     @property
     def is_storage(self) -> bool:
@@ -317,7 +533,7 @@ def quote(value: str) -> str:
     Quote a value for usbguard rule syntax.
     """
     if any(ord(c) < 32 for c in value):
-        raise UsbGuardError("caractère de contrôle dans une valeur : refusé.")
+        raise UsbGuardError(t("err_control_char"))
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
@@ -345,9 +561,9 @@ def build_allow_rule(device: Entry) -> str:
                       a.k.a. "BadUSB")
     """
     if not HEX_ID_RE.match(device.vid_pid.lower()):
-        raise UsbGuardError(f"identifiant USB invalide : {device.vid_pid!r}")
+        raise UsbGuardError(t("err_bad_id", value=repr(device.vid_pid)))
     if not device.hash:
-        raise UsbGuardError("le périphérique n'a pas d'empreinte (hash) : refusé.")
+        raise UsbGuardError(t("err_no_hash"))
     parts = ["allow", "id", device.vid_pid.lower()]
     if device.serial:
         parts += ["serial", quote(device.serial)]
@@ -390,33 +606,55 @@ def ask(prompt: str) -> str:
 
 
 def confirm(prompt: str) -> bool:
-    return ask(f"{prompt} [o/N] ").lower() in {"o", "oui", "y", "yes"}
+    """Oui/non. Accepte o/oui/y/yes dans les deux langues.
+    Yes/no. Accepts o/oui/y/yes in both languages.
+    """
+    answer = ask(f"{prompt} {t('confirm_hint')} ").lower()
+    return answer in {"o", "oui", "y", "yes"}
 
 
-def pick(entries: List[Entry], wanted: Optional[int], verb: str) -> Optional[Entry]:
+def pick(entries: List[Entry], wanted: Optional[int], prompt_key: str) -> Optional[Entry]:
     """Choisit une entrée : par numéro en argument, sinon en demandant.
     Choose an entry: by number given as argument, otherwise by asking.
     """
     if wanted is None:
-        answer = ask(f"Numéro à {verb} (Entrée pour annuler) : ")
+        answer = ask(t(prompt_key))
         if not answer:
             return None
         if not answer.isdigit():
-            raise UsbGuardError("il faut saisir un numéro.")
+            raise UsbGuardError(t("err_need_number"))
         wanted = int(answer)
     for entry in entries:
         if entry.num == wanted:
             return entry
-    raise UsbGuardError(f"aucun élément n°{wanted} dans la liste ci-dessus.")
+    raise UsbGuardError(t("err_no_item", num=wanted))
+
+
+def _headers(with_state: bool) -> List[str]:
+    cols = ["col_num"] + (["col_state"] if with_state else []) + [
+        "col_id", "col_type", "col_name", "col_serial"]
+    return [t(c) for c in cols]
+
+
+def state_label(target: str) -> str:
+    """allow/block/reject -> texte traduit. / allow/block/reject -> translated text."""
+    key = f"target_{target}"
+    return t(key) if key in MESSAGES[DEFAULT_LANG] else target
 
 
 def show_devices(devices: List[Entry]) -> None:
     rows = [
-        [str(d.num), TARGET_LABELS.get(d.target, d.target), d.vid_pid,
-         d.kind, d.name or "-", d.serial or "(aucun)"]
+        [str(d.num), state_label(d.target), d.vid_pid,
+         d.kind, d.name or "-", d.serial or t("no_serial")]
         for d in devices
     ]
-    print_table(["N°", "ÉTAT", "ID", "TYPE", "NOM", "SÉRIE"], rows)
+    print_table(_headers(with_state=True), rows)
+
+
+def show_rules(rules: List[Entry]) -> None:
+    rows = [[str(r.num), r.vid_pid, r.kind, r.name or "-", r.serial or t("no_serial")]
+            for r in rules]
+    print_table(_headers(with_state=False), rows)
 
 
 def visible_devices() -> List[Entry]:
@@ -430,7 +668,7 @@ def cmd_devices(_: argparse.Namespace) -> None:
     """Liste les périphériques branchés. / List connected devices."""
     devices = visible_devices()
     if not devices:
-        print("Aucun périphérique USB branché.")
+        print(t("no_devices"))
         return
     show_devices(devices)
 
@@ -439,11 +677,9 @@ def cmd_list(_: argparse.Namespace) -> None:
     """Affiche la liste blanche. / Show the whitelist."""
     rules = [r for r in list_rules() if r.target == "allow"]
     if not rules:
-        print("La liste blanche est vide.")
+        print(t("whitelist_empty"))
         return
-    rows = [[str(r.num), r.vid_pid, r.kind, r.name or "-", r.serial or "(aucun)"]
-            for r in rules]
-    print_table(["N°", "ID", "TYPE", "NOM", "SÉRIE"], rows)
+    show_rules(rules)
 
 
 def cmd_add(args: argparse.Namespace) -> None:
@@ -452,32 +688,31 @@ def cmd_add(args: argparse.Namespace) -> None:
     """
     pending = [d for d in visible_devices() if d.target != "allow"]
     if not pending:
-        print("Aucun périphérique bloqué à autoriser.")
-        print("Branchez la clé, puis relancez cette commande.")
+        print(t("no_blocked"))
+        print(t("plug_and_retry"))
         return
     show_devices(pending)
     print()
-    device = pick(pending, args.number, "autoriser")
+    device = pick(pending, args.number, "prompt_pick_allow")
     if device is None:
-        print("Annulé.")
+        print(t("cancelled"))
         return
 
     # FR : Garde-fous : on explique, on ne bloque pas.
     # EN : Safeguards: we explain, we do not forbid.
     if not device.is_storage:
-        print(f"\nATTENTION : ce n'est pas une clé de stockage mais : {device.kind}.")
-        print("Un clavier autorisé à tort peut taper des commandes à votre place.")
-        if ask("Tapez OUI en majuscules pour continuer : ") != "OUI":
-            print("Annulé.")
+        print("\n" + t("warn_not_storage", kind=device.kind))
+        print(t("warn_hid_risk"))
+        if ask(t("type_yes_prompt", word=t("yes_word"))) != t("yes_word"):
+            print(t("cancelled"))
             return
     if not device.serial:
-        print("\nNote : cet appareil n'a pas de numéro de série. La règle vaudra "
-              "pour tous les appareils du même modèle ayant la même empreinte.")
+        print("\n" + t("note_no_serial"))
 
     rule = build_allow_rule(device)
-    print(f"\nRègle à ajouter :\n  {rule}")
-    if not confirm("Confirmer l'ajout à la liste blanche ?"):
-        print("Annulé.")
+    print(f"\n{t('rule_to_add')}\n  {rule}")
+    if not confirm(t("confirm_add")):
+        print(t("cancelled"))
         return
 
     already = any(
@@ -491,30 +726,25 @@ def cmd_add(args: argparse.Namespace) -> None:
     # EN : unblocks right away, no need to re-plug.
     run_usbguard("allow-device", str(device.num))
     audit(f"action=add id={device.vid_pid} serial={device.serial!r} name={device.name!r}")
-    print("OK : périphérique autorisé (définitivement, sur tous les ports).")
+    print(t("added_ok"))
 
 
 def cmd_remove(args: argparse.Namespace) -> None:
     """Retire une règle de la liste blanche. / Remove a whitelist rule."""
     rules = [r for r in list_rules() if r.target == "allow"]
     if not rules:
-        print("La liste blanche est vide.")
+        print(t("whitelist_empty"))
         return
-    print_table(
-        ["N°", "ID", "TYPE", "NOM", "SÉRIE"],
-        [[str(r.num), r.vid_pid, r.kind, r.name or "-", r.serial or "(aucun)"]
-         for r in rules],
-    )
+    show_rules(rules)
     print()
-    rule = pick(rules, args.number, "retirer")
+    rule = pick(rules, args.number, "prompt_pick_remove")
     if rule is None:
-        print("Annulé.")
+        print(t("cancelled"))
         return
     if rule.interfaces and rule.interfaces[0].lower().startswith("03:"):
-        print("\nATTENTION : c'est un clavier/souris. Le retirer peut vous "
-              "empêcher de piloter la machine.")
-    if not confirm(f"Retirer la règle n°{rule.num} ({rule.name or rule.vid_pid}) ?"):
-        print("Annulé.")
+        print("\n" + t("warn_remove_hid"))
+    if not confirm(t("confirm_remove", num=rule.num, label=rule.name or rule.vid_pid)):
+        print(t("cancelled"))
         return
 
     run_usbguard("remove-rule", str(rule.num))
@@ -526,7 +756,7 @@ def cmd_remove(args: argparse.Namespace) -> None:
         if device.target == "allow" and same_device(device, rule):
             run_usbguard("block-device", str(device.num))
     audit(f"action=remove id={rule.vid_pid} serial={rule.serial!r} name={rule.name!r}")
-    print("OK : règle retirée.")
+    print(t("removed_ok"))
 
 
 def cmd_status(_: argparse.Namespace) -> None:
@@ -534,16 +764,31 @@ def cmd_status(_: argparse.Namespace) -> None:
     active = subprocess.run(
         [SYSTEMCTL, "is-active", "usbguard"], capture_output=True, text=True
     ).stdout.strip()
-    print(f"Service usbguard      : {active or 'inconnu'}")
+    print(t("status_service", state=active or t("unknown")))
     if active != "active":
-        print("  -> `sudo systemctl enable --now usbguard` pour le démarrer.")
+        print(t("status_start_hint"))
         return
     rules = [r for r in list_rules() if r.target == "allow"]
     devices = visible_devices()
     blocked = [d for d in devices if d.target != "allow"]
-    print(f"Règles d'autorisation : {len(rules)}")
-    print(f"Périphériques branchés: {len(devices)} (dont {len(blocked)} bloqué(s))")
-    print(f"Utilisateur           : {invoking_user()} (groupe {WHEEL_GROUP} : oui)")
+    print(t("status_rules", count=len(rules)))
+    print(t("status_devices", count=len(devices), blocked=len(blocked)))
+    print(t("status_user", user=invoking_user(), group=WHEEL_GROUP))
+
+
+def choose_language() -> None:
+    """Petit menu de langue, affiché en premier. / Small language menu, shown first.
+
+    FR : Ce menu est volontairement bilingue : on ne sait pas encore quelle
+         langue l'utilisateur lit.
+    EN : This menu is deliberately bilingual: we do not yet know which
+         language the user reads.
+    """
+    print("Langue / Language")
+    print("  1) Français")
+    print("  2) English")
+    choice = ask("> ")
+    set_language("en" if choice in {"2", "en", "EN", "english", "English"} else "fr")
 
 
 def cmd_menu(_: argparse.Namespace) -> None:
@@ -551,29 +796,29 @@ def cmd_menu(_: argparse.Namespace) -> None:
     Interactive menu (when the user just types `usb-whitelist`).
     """
     actions = {
-        "1": ("Voir les périphériques branchés", cmd_devices),
-        "2": ("Autoriser un périphérique bloqué", cmd_add),
-        "3": ("Voir la liste blanche", cmd_list),
-        "4": ("Retirer un périphérique de la liste blanche", cmd_remove),
-        "5": ("État du service", cmd_status),
+        "1": ("menu_1", cmd_devices),
+        "2": ("menu_2", cmd_add),
+        "3": ("menu_3", cmd_list),
+        "4": ("menu_4", cmd_remove),
+        "5": ("menu_5", cmd_status),
     }
     no_args = argparse.Namespace(number=None)
     while True:
-        print("\n=== Liste blanche USB ===")
-        for key, (label, _fn) in actions.items():
-            print(f"  {key}) {label}")
-        print("  q) Quitter")
-        choice = ask("Votre choix : ").lower()
+        print("\n" + t("menu_title"))
+        for key, (label_key, _fn) in actions.items():
+            print(f"  {key}) {t(label_key)}")
+        print(f"  q) {t('menu_quit')}")
+        choice = ask(t("menu_prompt")).lower()
         if choice in {"q", "quit", ""}:
             return
         if choice not in actions:
-            print("Choix invalide.")
+            print(t("menu_invalid"))
             continue
         print()
         try:
             actions[choice][1](no_args)
         except UsbGuardError as exc:
-            print(f"Erreur : {exc}")
+            print(t("error_prefix", msg=exc))
 
 
 # --------------------------------------------------------------------------
@@ -582,40 +827,70 @@ def cmd_menu(_: argparse.Namespace) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="usb-whitelist",
-        description="Gestion de la liste blanche USB (réservé au groupe wheel). "
-                    "Sans argument : menu interactif.",
+        description=t("help_description"),
     )
+    parser.add_argument("--lang", choices=LANGUAGES, help=t("help_lang"))
     sub = parser.add_subparsers(dest="command")
-    sub.add_parser("devices", help="périphériques branchés et leur état").set_defaults(func=cmd_devices)
-    sub.add_parser("list", help="afficher la liste blanche").set_defaults(func=cmd_list)
-    sub.add_parser("status", help="état du service").set_defaults(func=cmd_status)
-    for name, func, text in (
-        ("add", cmd_add, "autoriser un périphérique bloqué"),
-        ("remove", cmd_remove, "retirer une règle de la liste blanche"),
-    ):
-        p = sub.add_parser(name, help=text)
-        p.add_argument("number", nargs="?", type=int,
-                       help="numéro affiché dans la liste (sinon on le demande)")
+    sub.add_parser("devices", help=t("help_devices")).set_defaults(func=cmd_devices)
+    sub.add_parser("list", help=t("help_list")).set_defaults(func=cmd_list)
+    sub.add_parser("status", help=t("help_status")).set_defaults(func=cmd_status)
+    for name, func in (("add", cmd_add), ("remove", cmd_remove)):
+        p = sub.add_parser(name, help=t(f"help_{name}"))
+        p.add_argument("number", nargs="?", type=int, help=t("help_number"))
         p.set_defaults(func=func)
     return parser
 
 
+def _initial_language(argv: List[str]) -> Optional[str]:
+    """Langue demandée par --lang ou l'environnement, sinon None.
+    Language requested by --lang or the environment, otherwise None.
+
+    FR : On la lit AVANT de construire le vrai parseur, car l'aide (--help)
+         est elle-même traduite.
+    EN : We read it BEFORE building the real parser, because the help
+         (--help) is itself translated.
+    """
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--lang", choices=LANGUAGES)
+    known, _ = pre.parse_known_args(argv)
+    lang = known.lang or os.environ.get("USB_WHITELIST_LANG", "")
+    return lang if lang in LANGUAGES else None
+
+
 def main(argv: Optional[List[str]] = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+
+    lang = _initial_language(argv)
+    set_language(lang or DEFAULT_LANG)
     args = build_parser().parse_args(argv)
 
+    # FR : Refus : on ne sait pas quelle langue lit l'utilisateur, on affiche
+    #      donc les deux.
+    # EN : Denial: we do not know which language the user reads, so we show
+    #      both.
     if not is_wheel_member():
-        print(f"Accès refusé : cet outil est réservé au groupe « {WHEEL_GROUP} ».",
-              file=sys.stderr)
+        for code in LANGUAGES:
+            set_language(code)
+            print(t("denied", group=WHEEL_GROUP), file=sys.stderr)
         return 1
+
+    # FR : Menu de langue seulement si on est interactif, sans commande
+    #      explicite et sans langue déjà imposée (un script ne doit jamais
+    #      rester bloqué à attendre une réponse).
+    # EN : Language menu only when interactive, with no explicit command and
+    #      no language already imposed (a script must never hang waiting for
+    #      an answer).
+    if getattr(args, "func", None) is None and lang is None and sys.stdin.isatty():
+        choose_language()
 
     func = getattr(args, "func", cmd_menu)
     try:
         func(args)
     except UsbGuardError as exc:
-        print(f"Erreur : {exc}", file=sys.stderr)
+        print(t("error_prefix", msg=exc), file=sys.stderr)
         return 2
     except KeyboardInterrupt:
-        print("\nInterrompu.")
+        print("\n" + t("interrupted"))
         return 130
     return 0
 
