@@ -102,7 +102,9 @@ Ils couvrent la lecture des sorties usbguard, la construction des règles
 
 Ces points reposent sur la documentation d'usbguard, pas sur un test réel :
 
-1. Les paquets existent : `dnf info usbguard usbguard-tools usbguard-selinux`.
+1. Les paquets existent : `dnf --enablerepo=ol9_appstream list --showduplicates usbguard usbguard-selinux`.
+   Le bundle épingle `usbguard` et `usbguard-selinux` en **1.0.0-16.el9** : la 1.1.4 exige une
+   politique SELinux plus récente que celle d'OL 9.6 (voir `deploy/prepare_bundle.sh`).
 2. Les options d'`add-user` : `usbguard add-user --help`.
 3. `append-rule` persiste dans `rules.conf` après redémarrage du service.
 4. Le format de `usbguard list-devices` correspond à ce que lit `parse_line`.
@@ -217,7 +219,9 @@ missing group…) and consistency of the FR/EN translations.
 
 These points rely on usbguard's documentation, not on a real test:
 
-1. The packages exist: `dnf info usbguard usbguard-tools usbguard-selinux`.
+1. The packages exist: `dnf --enablerepo=ol9_appstream list --showduplicates usbguard usbguard-selinux`.
+   The bundle pins `usbguard` and `usbguard-selinux` to **1.0.0-16.el9**: 1.1.4 requires a newer
+   SELinux policy than OL 9.6 ships (see `deploy/prepare_bundle.sh`).
 2. The `add-user` options: `usbguard add-user --help`.
 3. `append-rule` persists into `rules.conf` after a service restart.
 4. The format of `usbguard list-devices` matches what `parse_line` reads.

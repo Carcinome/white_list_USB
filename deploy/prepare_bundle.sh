@@ -69,10 +69,10 @@ OS_RELEASE=/etc/os-release
 #      typo, which bash would silently ignore.
 for v in $(compgen -e | grep '^USB_WHITELIST_' || true); do
     case "$v" in
-        USB_WHITELIST_LANG|USB_WHITELIST_REPOS) ;;
+        USB_WHITELIST_LANG|USB_WHITELIST_REPOS|USB_WHITELIST_PACKAGES) ;;
         *)
-            say "Variable inconnue : $v  (vouliez-vous USB_WHITELIST_REPOS ou USB_WHITELIST_LANG ?)" \
-                "Unknown variable: $v  (did you mean USB_WHITELIST_REPOS or USB_WHITELIST_LANG?)" >&2
+            say "Variable inconnue : $v  (valides : USB_WHITELIST_LANG, USB_WHITELIST_REPOS, USB_WHITELIST_PACKAGES)" \
+                "Unknown variable: $v  (valid: USB_WHITELIST_LANG, USB_WHITELIST_REPOS, USB_WHITELIST_PACKAGES)" >&2
             exit 1
             ;;
     esac
@@ -129,17 +129,29 @@ fi
 # --------------------------------------------------------------------------
 # 2. Quels paquets ? / Which packages?
 # --------------------------------------------------------------------------
-# FR : usbguard          = le démon
-#      usbguard-tools    = la commande `usbguard` (selon la version, elle
-#                          peut être dans le paquet principal ou ici)
-#      usbguard-selinux  = la politique SELinux qui l'autorise à fonctionner
-#      python3           = l'interpréteur de notre outil
-# EN : usbguard          = the daemon
-#      usbguard-tools    = the `usbguard` command (depending on the version
-#                          it may be in the main package or here)
-#      usbguard-selinux  = the SELinux policy allowing it to run
-#      python3           = the interpreter for our tool
-WANTED=(usbguard usbguard-tools usbguard-selinux python3)
+# FR : usbguard-1.0.0-16.el9          = le démon ET la commande `usbguard`
+#                                       (dans cette version, ils ne sont pas
+#                                       séparés : pas de usbguard-tools)
+#      usbguard-selinux-1.0.0-16.el9  = la politique SELinux assortie
+#      python3                        = l'interpréteur de notre outil
+#
+#      POURQUOI ÉPINGLER LA VERSION : la 1.1.4 (la plus récente d'AppStream)
+#      exige selinux-policy >= 38.1.65, alors qu'un OL 9.6 a la 38.1.53. dnf
+#      refuse alors toute la résolution. La 1.0.0-16 s'installe proprement
+#      (vérifié par simulation sur la VM : 4 paquets, 0 mise à jour).
+#      Pour une autre liste : USB_WHITELIST_PACKAGES="nom-1.2.3-4.el9 ..."
+# EN : usbguard-1.0.0-16.el9          = the daemon AND the `usbguard` command
+#                                       (in this version they are not split:
+#                                       no usbguard-tools)
+#      usbguard-selinux-1.0.0-16.el9  = the matching SELinux policy
+#      python3                        = the interpreter for our tool
+#
+#      WHY PIN THE VERSION: 1.1.4 (the newest in AppStream) requires
+#      selinux-policy >= 38.1.65, whereas OL 9.6 ships 38.1.53. dnf then
+#      refuses the whole resolution. 1.0.0-16 installs cleanly (verified by
+#      a dry run on the VM: 4 packages, 0 upgrades).
+#      For another list: USB_WHITELIST_PACKAGES="name-1.2.3-4.el9 ..."
+WANTED=(${USB_WHITELIST_PACKAGES:-usbguard-1.0.0-16.el9 usbguard-selinux-1.0.0-16.el9 python3})
 PKGS=()
 
 # FR : On teste l'existence de chaque nom AVANT de télécharger. Un seul nom
