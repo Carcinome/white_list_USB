@@ -13,12 +13,14 @@
 #
 # FR : Dépôts : l'OS custom les désactive. Ce script active, POUR SES SEULES
 #      COMMANDES (--enablerepo), les dépôts de USB_WHITELIST_REPOS. Rien n'est
-#      modifié dans /etc/yum.repos.d. Défaut : "ol9_baseos_latest ol9_appstream".
+#      modifié dans /etc/yum.repos.d. Défaut : déduit de la version de l'OS
+#      (OL 9.6 -> "ol9_u6_baseos_base ol9_appstream").
 #      USB_WHITELIST_REPOS="" = n'en activer aucun (dépôts déjà actifs).
 # EN : Repositories: the custom OS disables them. This script enables, FOR ITS
 #      OWN COMMANDS ONLY (--enablerepo), the repos in USB_WHITELIST_REPOS.
-#      Nothing is changed in /etc/yum.repos.d. Default: "ol9_baseos_latest
-#      ol9_appstream". USB_WHITELIST_REPOS="" = enable none (already active).
+#      Nothing is changed in /etc/yum.repos.d. Default: derived from the OS
+#      version (OL 9.6 -> "ol9_u6_baseos_base ol9_appstream").
+#      USB_WHITELIST_REPOS="" = enable none (already active).
 
 # FR : -e  arrêt à la première commande en erreur
 #      -u  une variable non définie est une erreur (évite les fautes de frappe)
@@ -48,7 +50,47 @@ say() { if [[ $LANG_CODE == en ]]; then echo "$2"; else echo "$1"; fi; }
 # EN : ${VAR-default} (without ":") applies the default only when VAR is NOT
 #      set; a variable set but empty means "no repository".
 #      Each name becomes a --enablerepo=<name> option, passed to dnf below.
-REPOS="${USB_WHITELIST_REPOS-ol9_baseos_latest ol9_appstream}"
+#
+# FR : Sans variable, on DÉDUIT les dépôts de la version de l'OS en cours :
+#      un OL 9.6 prend `ol9_u6_baseos_base` (la base 9.6) et non
+#      `ol9_baseos_latest`, qui est toujours la DERNIÈRE mise à jour mineure.
+#      Mélanger du 9.8 sur un 9.6 ferait refuser l'installation par dnf
+#      (systemd est un paquet protégé) ou changerait la version de l'OS.
+# EN : With no variable, we DERIVE the repos from the running OS version:
+#      OL 9.6 takes `ol9_u6_baseos_base` (the 9.6 base), not
+#      `ol9_baseos_latest`, which is always the LATEST minor update. Mixing
+#      9.8 onto a 9.6 would make dnf refuse the install (systemd is a
+#      protected package) or silently change the OS version.
+OS_RELEASE=/etc/os-release
+
+# FR : Garde-fou : une variable USB_WHITELIST_* inconnue est presque
+#      sûrement une faute de frappe, que bash ignorerait en silence.
+# EN : Safeguard: an unknown USB_WHITELIST_* variable is almost surely a
+#      typo, which bash would silently ignore.
+for v in $(compgen -e | grep '^USB_WHITELIST_' || true); do
+    case "$v" in
+        USB_WHITELIST_LANG|USB_WHITELIST_REPOS) ;;
+        *)
+            say "Variable inconnue : $v  (vouliez-vous USB_WHITELIST_REPOS ou USB_WHITELIST_LANG ?)" \
+                "Unknown variable: $v  (did you mean USB_WHITELIST_REPOS or USB_WHITELIST_LANG?)" >&2
+            exit 1
+            ;;
+    esac
+done
+
+if [[ -n "${USB_WHITELIST_REPOS+x}" ]]; then
+    REPOS="$USB_WHITELIST_REPOS"            # FR: choix explicite / EN: explicit choice
+else
+    OS_VERSION=""
+    if [[ -r "$OS_RELEASE" ]]; then
+        OS_VERSION="$(. "$OS_RELEASE" && echo "${VERSION_ID:-}")"
+    fi
+    if [[ "$OS_VERSION" =~ ^9\.([0-9]+)$ ]]; then
+        REPOS="ol9_u${BASH_REMATCH[1]}_baseos_base ol9_appstream"
+    else
+        REPOS="ol9_baseos_latest ol9_appstream"
+    fi
+fi
 ENABLE_ARGS=()
 for r in $REPOS; do
     ENABLE_ARGS+=("--enablerepo=$r")
@@ -66,6 +108,11 @@ mkdir -p "$DEST/rpms"
 # --------------------------------------------------------------------------
 # 1. La sous-commande `dnf download` / The `dnf download` subcommand
 # --------------------------------------------------------------------------
+# FR : On affiche les dépôts réellement utilisés : plus de surprise silencieuse.
+# EN : We print the repositories actually used: no more silent surprises.
+say "Dépôts utilisés (activés pour ce script seulement) : ${REPOS:-aucun}" \
+    "Repositories used (enabled for this script only): ${REPOS:-none}"
+
 # FR : `dnf download` vient du plugin dnf-plugins-core. On ne l'installe que
 #      s'il manque (l'installer demande les droits root).
 # EN : `dnf download` comes from the dnf-plugins-core plugin. We only install
@@ -140,6 +187,15 @@ fi
 #      --destdir  destination folder for the .rpm files
 say "[3/4] Téléchargement (avec toutes les dépendances)..." \
     "[3/4] Downloading (with all dependencies)..."
+
+# FR : On repart d'un dossier vide : des RPM restés d'une exécution précédente
+#      (autres dépôts, autres versions) se mélangeraient silencieusement aux
+#      nouveaux, et l'installation hors-ligne installerait ce mélange.
+# EN : We start from an empty folder: RPMs left over from a previous run
+#      (other repos, other versions) would silently mix with the new ones,
+#      and the offline install would install that mixture.
+rm -f "$DEST"/rpms/*.rpm
+
 dnf "${ENABLE_ARGS[@]}" download --resolve --alldeps \
     --destdir "$DEST/rpms" "${PKGS[@]}"
 
