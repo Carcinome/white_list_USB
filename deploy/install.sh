@@ -61,18 +61,49 @@ say "[1/6] Vérification des empreintes SHA256..." \
 ( cd "$HERE/rpms" && sha256sum --quiet -c ../SHA256SUMS )
 
 # --------------------------------------------------------------------------
-# 2. Installation des RPM sans réseau / Installing the RPMs without network
+# 2. Installation sans réseau, par nom / Offline install, by name
 # --------------------------------------------------------------------------
-# FR : --disablerepo='*'     aucun dépôt contacté (poste hors-ligne) ;
-#                            dnf résout les dépendances parmi les .rpm donnés
-#      localpkg_gpgcheck=1   vérifie aussi la signature GPG des RPM locaux
-#                            (par défaut dnf ne le fait pas pour les fichiers)
-# EN : --disablerepo='*'     no repository contacted (offline workstation);
-#                            dnf resolves dependencies among the given .rpm
-#      localpkg_gpgcheck=1   also checks the GPG signature of local RPMs
-#                            (by default dnf does not for plain files)
-say "[2/6] Installation des paquets..." "[2/6] Installing packages..."
-dnf -y install --disablerepo='*' --setopt=localpkg_gpgcheck=1 "$HERE"/rpms/*.rpm
+# FR : Le dossier rpms/ est un DÉPÔT LOCAL (index repodata/ créé par
+#      prepare_bundle.sh). On demande à dnf d'installer `usbguard` et
+#      `usbguard-selinux` PAR NOM, et dnf choisit seul ce qui manque :
+#        - poste déjà installé : seulement les paquets absents (ici 4) ;
+#        - poste neuf          : tout le nécessaire, présent dans le dépôt ;
+#        - jamais de rétrogradation d'un paquet déjà installé.
+#      (Donner les 133 fichiers un par un aurait rétrogradé
+#      oraclelinux-release, qui possède /etc/os-release.)
+#
+#      --disablerepo='*'            aucun dépôt contacté (poste hors-ligne)
+#      --repofrompath=usbwl,<dir>   déclare le dossier comme dépôt « usbwl »
+#      --enablerepo=usbwl           et ne laisse que lui actif
+#      usbwl.gpgcheck=1 + gpgkey    exige la signature GPG d'Oracle sur
+#                                   chaque RPM (le bundle a voyagé)
+# EN : The rpms/ folder is a LOCAL REPOSITORY (repodata/ index created by
+#      prepare_bundle.sh). We ask dnf to install `usbguard` and
+#      `usbguard-selinux` BY NAME, and dnf picks what is missing by itself:
+#        - already-installed host: only the absent packages (4 here);
+#        - brand-new host:         everything needed, found in the repo;
+#        - never a downgrade of an already-installed package.
+#      (Feeding the 133 files one by one would have downgraded
+#      oraclelinux-release, which owns /etc/os-release.)
+#
+#      --disablerepo='*'            no repository contacted (offline host)
+#      --repofrompath=usbwl,<dir>   declares the folder as repo "usbwl"
+#      --enablerepo=usbwl           and leaves only that one active
+#      usbwl.gpgcheck=1 + gpgkey    requires Oracle's GPG signature on every
+#                                   RPM (the bundle has travelled)
+say "[2/6] Installation des paquets (par nom, depuis le dépôt local)..." \
+    "[2/6] Installing packages (by name, from the local repository)..."
+GPG_KEY=/etc/pki/rpm-gpg/RPM-GPG-KEY-oracle
+[[ -d "$HERE/rpms/repodata" ]] || die \
+    "Index du dépôt absent (rpms/repodata) : relancez prepare_bundle.sh." \
+    "Repository index missing (rpms/repodata): run prepare_bundle.sh again."
+[[ -r "$GPG_KEY" ]] || die \
+    "Clé GPG Oracle introuvable : $GPG_KEY" \
+    "Oracle GPG key not found: $GPG_KEY"
+dnf -y install --disablerepo='*' \
+    --repofrompath="usbwl,$HERE/rpms" --enablerepo=usbwl \
+    --setopt=usbwl.gpgcheck=1 --setopt="usbwl.gpgkey=file://$GPG_KEY" \
+    usbguard usbguard-selinux
 
 # --------------------------------------------------------------------------
 # 3. Politique de base / Baseline policy
@@ -97,7 +128,19 @@ if [[ -s "$RULES" ]] && grep -qE '^[[:space:]]*(allow|block|reject)[[:space:]]' 
         "  Existing whitelist kept: $RULES"
 else
     TMP="$(mktemp)"
-    usbguard generate-policy > "$TMP"
+    # FR : On retire `via-port "..."` de chaque règle. Les numéros de port
+    #      (« 2-1 ») dépendent de l'ordre d'initialisation des contrôleurs et
+    #      CHANGENT d'un démarrage à l'autre (constaté sur VMware : « 2-1 »
+    #      est devenu « 1-1 »). Une règle liée au port ne reconnaît alors plus
+    #      le périphérique, qui est bloqué. `hash` et `parent-hash` suffisent à
+    #      l'identifier. (Même choix que pour les clés ajoutées par l'outil.)
+    # EN : We strip `via-port "..."` from every rule. Port numbers ("2-1")
+    #      depend on controller initialization order and CHANGE between
+    #      boots (seen on VMware: "2-1" became "1-1"). A port-bound rule then
+    #      no longer recognizes the device, which gets blocked. `hash` and
+    #      `parent-hash` are enough to identify it. (Same choice as for the
+    #      keys added by the tool.)
+    usbguard generate-policy | sed -E 's/ via-port "[^"]*"//g' > "$TMP"
     say "-------- périphériques qui resteront autorisés --------" \
         "-------- devices that will stay allowed --------"
     cat "$TMP"

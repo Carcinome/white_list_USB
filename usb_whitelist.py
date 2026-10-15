@@ -428,6 +428,12 @@ class Entry:
     serial: str = ""
     name: str = ""
     hash: str = ""
+    # FR : port physique ("1-1") et empreinte du parent : un périphérique les
+    #      porte toujours ; une règle seulement si elle est « liée au port ».
+    # EN : physical port ("1-1") and parent fingerprint: a device always
+    #      carries them; a rule only if it is "port-bound".
+    via_port: str = ""
+    parent_hash: str = ""
     interfaces: List[str] = field(default_factory=list)  # ["08:06:50"]
 
     @property
@@ -504,6 +510,10 @@ def parse_line(line: str) -> Optional[Entry]:
                 entry.name = value
             elif key == "hash":
                 entry.hash = value
+            elif key == "via-port":
+                entry.via_port = value
+            elif key == "parent-hash":
+                entry.parent_hash = value
         # FR : tout autre jeton est ignoré : on reste tolérant aux nouveautés.
         # EN : any other token is ignored: we stay tolerant to new fields.
     return entry
@@ -582,6 +592,30 @@ def same_device(a: Entry, b: Entry) -> bool:
         and a.serial == b.serial
         and (not a.hash or not b.hash or a.hash == b.hash)
     )
+
+
+def rule_covers(rule: Entry, device: Entry) -> bool:
+    """La règle autoriserait-elle ce périphérique, TEL QUE BRANCHÉ ?
+    Would this rule allow this device, AS CURRENTLY PLUGGED?
+
+    FR : same_device() dit « même matériel ». Ici on ajoute ce qu'usbguard
+         vérifie vraiment : si la règle est liée à un port (`via-port`) ou à
+         un parent (`parent-hash`), le périphérique doit y être branché. Une
+         règle liée au port « 2-1 » désigne la même souris, mais ne la
+         reconnaît plus quand elle apparaît sur « 1-1 ».
+    EN : same_device() says "same hardware". Here we add what usbguard
+         really checks: if the rule is bound to a port (`via-port`) or to a
+         parent (`parent-hash`), the device must sit there. A rule bound to
+         port "2-1" designates the same mouse, yet no longer recognizes it
+         when it shows up on "1-1".
+    """
+    if not same_device(rule, device):
+        return False
+    if rule.via_port and rule.via_port != device.via_port:
+        return False
+    if rule.parent_hash and rule.parent_hash != device.parent_hash:
+        return False
+    return True
 
 
 # --------------------------------------------------------------------------
@@ -715,8 +749,15 @@ def cmd_add(args: argparse.Namespace) -> None:
         print(t("cancelled"))
         return
 
+    # FR : « Déjà autorisé » = une règle SANS port désigne ce matériel. Une
+    #      règle liée à un port (ex. celle de la photo de base) ne compte
+    #      pas : elle ne suit pas la clé quand le numéro de port change.
+    # EN : "Already allowed" = a rule WITHOUT a port designates this
+    #      hardware. A port-bound rule (e.g. the baseline snapshot's) does
+    #      not count: it does not follow the key when the port number changes.
     already = any(
-        same_device(device, r) for r in list_rules() if r.target == "allow"
+        r.target == "allow" and not r.via_port and same_device(device, r)
+        for r in list_rules()
     )
     if not already:
         # FR : écrit dans /etc/usbguard/rules.conf
@@ -752,8 +793,17 @@ def cmd_remove(args: argparse.Namespace) -> None:
     #      bloque explicitement pour que le retrait soit immédiat.
     # EN : Removing the rule does not eject an already-authorized device: we
     #      block it explicitly so the removal takes effect immediately.
+    #
+    # FR : MAIS seulement si plus AUCUNE règle restante n'autorise ce
+    #      périphérique (on relit les règles APRÈS le retrait) : sinon on
+    #      couperait une clé encore légitimement autorisée par une autre règle.
+    # EN : BUT only if NO remaining rule still allows that device (we re-read
+    #      the rules AFTER the removal): otherwise we would cut a key that
+    #      another rule still legitimately allows.
+    remaining = [r for r in list_rules() if r.target == "allow"]
     for device in visible_devices():
-        if device.target == "allow" and same_device(device, rule):
+        if (device.target == "allow" and same_device(device, rule)
+                and not any(rule_covers(r, device) for r in remaining)):
             run_usbguard("block-device", str(device.num))
     audit(f"action=remove id={rule.vid_pid} serial={rule.serial!r} name={rule.name!r}")
     print(t("removed_ok"))

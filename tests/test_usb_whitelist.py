@@ -251,6 +251,116 @@ class WheelTests(unittest.TestCase):
                                     user_groups=[10]))
 
 
+# FR : Les VRAIES lignes relevées sur la VM (VMware, OL 9.6) : la règle de base
+#      est liée au port "2-1", la souris est maintenant sur "1-1".
+# EN : The REAL lines captured on the VM (VMware, OL 9.6): the baseline rule is
+#      bound to port "2-1", the mouse now sits on "1-1".
+VM_RULE_PORT = (
+    '3: allow id 0e0f:0003 serial "" name "VMware Virtual USB Mouse" '
+    'hash "F4BFfAiFQzjQxG8oQHVYMFiDF2/zhhARDrRSIj6oij8=" '
+    'parent-hash "3QuFY0nRVqo+mgnIkqiXmmirRvxPDeP7P3mintodpys=" '
+    'via-port "2-1" with-interface 03:01:02 with-connect-type "unknown"'
+)
+VM_DEVICE_MOVED = (
+    '7: block id 0e0f:0003 serial "" name "VMware Virtual USB Mouse" '
+    'hash "F4BFfAiFQzjQxG8oQHVYMFiDF2/zhhARDrRSIj6oij8=" '
+    'parent-hash "3QuFY0nRVqo+mgnIkqiXmmirRvxPDeP7P3mintodpys=" '
+    'via-port "1-1" with-interface 03:01:02 with-connect-type "unknown"'
+)
+VM_RULE_PORTABLE = VM_RULE_PORT.replace('3: ', '5: ').replace(' via-port "2-1"', '')
+
+
+class PortBoundRuleTests(unittest.TestCase):
+    """Le cas réel : une règle liée au port ne reconnaît plus le matériel.
+    The real case: a port-bound rule no longer recognizes the hardware.
+    """
+
+    def setUp(self):
+        uw.set_language("fr")
+
+    def test_champs_port_et_parent(self):
+        """via-port et parent-hash sont bien lus. via-port and parent-hash are read."""
+        e = uw.parse_line(VM_RULE_PORT)
+        self.assertEqual(e.via_port, "2-1")
+        self.assertTrue(e.parent_hash.startswith("3QuFY0n"))
+        self.assertEqual(uw.parse_line(VM_RULE_PORTABLE).via_port, "")
+
+    def test_meme_materiel_mais_regle_qui_ne_couvre_plus(self):
+        """Même matériel (same_device) mais port différent : non couvert.
+        Same hardware (same_device) but different port: not covered.
+        """
+        rule, dev = uw.parse_line(VM_RULE_PORT), uw.parse_line(VM_DEVICE_MOVED)
+        self.assertTrue(uw.same_device(rule, dev))
+        self.assertFalse(uw.rule_covers(rule, dev))
+
+    def test_regle_sans_port_couvre(self):
+        """Une règle sans via-port couvre le périphérique où qu'il soit.
+        A rule without via-port covers the device wherever it is.
+        """
+        self.assertTrue(uw.rule_covers(uw.parse_line(VM_RULE_PORTABLE),
+                                       uw.parse_line(VM_DEVICE_MOVED)))
+
+    def _run_add(self, rules):
+        """Exécute cmd_add avec de faux usbguard/saisies ; renvoie les appels.
+        Runs cmd_add with fake usbguard/inputs; returns the calls made.
+        """
+        calls = []
+        dev = uw.parse_line(VM_DEVICE_MOVED)
+        with mock.patch.object(uw, "list_devices", return_value=[dev]),                 mock.patch.object(uw, "list_rules", return_value=rules),                 mock.patch.object(uw, "run_usbguard",
+                                  side_effect=lambda *a: calls.append(a) or ""),                 mock.patch.object(uw, "audit"),                 mock.patch("builtins.input", side_effect=[uw.t("yes_word"), "o"]),                 redirect_stdout(io.StringIO()):
+            uw.cmd_add(types.SimpleNamespace(number=7))
+        return calls
+
+    def test_add_ecrit_une_regle_si_seule_une_regle_liee_au_port(self):
+        """LE BUG CORRIGÉ : une règle liée au port n'empêche plus l'écriture
+        de la règle portable.
+        THE FIXED BUG: a port-bound rule no longer prevents writing the
+        portable rule.
+        """
+        calls = self._run_add([uw.parse_line(VM_RULE_PORT)])
+        verbs = [c[0] for c in calls]
+        self.assertIn("append-rule", verbs)
+        self.assertIn("allow-device", verbs)
+        rule_text = [c for c in calls if c[0] == "append-rule"][0][1]
+        self.assertNotIn("via-port", rule_text)
+
+    def test_add_n_ecrit_pas_deux_fois_une_regle_portable(self):
+        """Une règle portable existe déjà : pas de doublon, mais on débloque.
+        A portable rule already exists: no duplicate, but we unblock.
+        """
+        calls = self._run_add([uw.parse_line(VM_RULE_PORTABLE)])
+        verbs = [c[0] for c in calls]
+        self.assertNotIn("append-rule", verbs)
+        self.assertIn("allow-device", verbs)
+
+    def _run_remove(self, before, after):
+        calls = []
+        allowed_dev = uw.parse_line(VM_DEVICE_MOVED.replace(": block", ": allow"))
+        with mock.patch.object(uw, "list_devices", return_value=[allowed_dev]),                 mock.patch.object(uw, "list_rules", side_effect=[before, after]),                 mock.patch.object(uw, "run_usbguard",
+                                  side_effect=lambda *a: calls.append(a) or ""),                 mock.patch.object(uw, "audit"),                 mock.patch("builtins.input", return_value="o"),                 redirect_stdout(io.StringIO()):
+            uw.cmd_remove(types.SimpleNamespace(number=5))
+        return [c[0] for c in calls]
+
+    def test_remove_ne_coupe_pas_si_une_autre_regle_autorise(self):
+        """LE 2e BUG CORRIGÉ : si une règle restante couvre encore le
+        périphérique, on ne le bloque pas.
+        THE 2nd FIXED BUG: if a remaining rule still covers the device, we do
+        not block it.
+        """
+        dup = uw.parse_line(VM_RULE_PORTABLE.replace("5: ", "9: "))
+        verbs = self._run_remove(before=[uw.parse_line(VM_RULE_PORTABLE), dup],
+                                 after=[dup])
+        self.assertIn("remove-rule", verbs)
+        self.assertNotIn("block-device", verbs)
+
+    def test_remove_bloque_si_plus_aucune_regle(self):
+        """Plus aucune règle ne couvre : le périphérique est bloqué.
+        No rule covers it any more: the device is blocked.
+        """
+        verbs = self._run_remove(before=[uw.parse_line(VM_RULE_PORTABLE)], after=[])
+        self.assertIn("block-device", verbs)
+
+
 class TranslationTests(unittest.TestCase):
     """Le catalogue fr/en doit rester synchronisé.
     The fr/en catalog must stay in sync.

@@ -126,6 +126,21 @@ else
         "[1/4] 'dnf download' plugin already present."
 fi
 
+# FR : createrepo_c fabrique l'index (« métadonnées ») qui transforme le
+#      dossier rpms/ en dépôt que dnf sait interroger. On le vérifie TÔT :
+#      échouer après 100 Mo de téléchargement serait une perte de temps.
+#      Il n'est nécessaire qu'ICI, jamais sur les postes cibles.
+# EN : createrepo_c builds the index ("metadata") that turns the rpms/ folder
+#      into a repository dnf can query. We check it EARLY: failing after
+#      100 MB of downloads would waste time. It is only needed HERE, never
+#      on the target workstations.
+if ! command -v createrepo_c >/dev/null 2>&1; then
+    say "createrepo_c est absent. Installez-le (une fois), puis relancez :" \
+        "createrepo_c is missing. Install it (once), then run again:" >&2
+    echo "  sudo dnf ${ENABLE_ARGS[*]} install createrepo_c" >&2
+    exit 1
+fi
+
 # --------------------------------------------------------------------------
 # 2. Quels paquets ? / Which packages?
 # --------------------------------------------------------------------------
@@ -151,7 +166,7 @@ fi
 #      refuses the whole resolution. 1.0.0-16 installs cleanly (verified by
 #      a dry run on the VM: 4 packages, 0 upgrades).
 #      For another list: USB_WHITELIST_PACKAGES="name-1.2.3-4.el9 ..."
-WANTED=(${USB_WHITELIST_PACKAGES:-usbguard-1.0.0-16.el9 usbguard-selinux-1.0.0-16.el9 python3})
+read -r -a WANTED <<< "${USB_WHITELIST_PACKAGES:-usbguard-1.0.0-16.el9 usbguard-selinux-1.0.0-16.el9 python3}"
 PKGS=()
 
 # FR : On teste l'existence de chaque nom AVANT de télécharger. Un seul nom
@@ -207,6 +222,7 @@ say "[3/4] Téléchargement (avec toutes les dépendances)..." \
 #      (other repos, other versions) would silently mix with the new ones,
 #      and the offline install would install that mixture.
 rm -f "$DEST"/rpms/*.rpm
+rm -rf "$DEST"/rpms/repodata
 
 dnf "${ENABLE_ARGS[@]}" download --resolve --alldeps \
     --destdir "$DEST/rpms" "${PKGS[@]}"
@@ -227,15 +243,28 @@ if [[ ${#I686[@]} -gt 0 ]]; then
 fi
 
 # --------------------------------------------------------------------------
-# 4. Empreintes + copie de l'outil / Checksums + copying the tool
+# 4. Index du dépôt, empreintes, copie de l'outil
+#    Repository index, checksums, copying the tool
 # --------------------------------------------------------------------------
-# FR : SHA256SUMS permet à install.sh de détecter un fichier corrompu ou
-#      modifié pendant le transport (clé USB, copie réseau...).
-# EN : SHA256SUMS lets install.sh detect a file corrupted or modified in
-#      transit (USB key, network copy...).
-say "[4/4] Empreintes SHA256 et copie de l'outil..." \
-    "[4/4] SHA256 checksums and copying the tool..."
-( cd "$DEST/rpms" && sha256sum ./*.rpm > ../SHA256SUMS )
+# FR : rpms/ devient un DÉPÔT LOCAL : install.sh demandera à dnf d'installer
+#      `usbguard` PAR NOM depuis ce dépôt. dnf ne prendra alors que ce qui
+#      manque sur le poste, et ne rétrogradera jamais un paquet déjà installé
+#      (ex. oraclelinux-release 1.0.8 -> 1.0.7). Un poste neuf recevra tout.
+# EN : rpms/ becomes a LOCAL REPOSITORY: install.sh will ask dnf to install
+#      `usbguard` BY NAME from this repo. dnf then only takes what the
+#      workstation lacks, and never downgrades an installed package (e.g.
+#      oraclelinux-release 1.0.8 -> 1.0.7). A brand-new machine gets it all.
+say "[4/4] Index du dépôt, empreintes SHA256, copie de l'outil..." \
+    "[4/4] Repository index, SHA256 checksums, copying the tool..."
+createrepo_c --quiet "$DEST/rpms"
+
+# FR : SHA256SUMS couvre les .rpm ET l'index (repodata/) : install.sh peut
+#      ainsi détecter un fichier corrompu ou modifié pendant le transport.
+#      find -print0 | sort -z | xargs -0 : robuste aux espaces dans les noms.
+# EN : SHA256SUMS covers the .rpm files AND the index (repodata/): install.sh
+#      can thus detect a file corrupted or modified in transit.
+#      find -print0 | sort -z | xargs -0: safe with spaces in names.
+( cd "$DEST/rpms" && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../SHA256SUMS )
 
 # FR : L'outil et l'installateur voyagent dans le même dossier.
 # EN : The tool and the installer travel in the same folder.
