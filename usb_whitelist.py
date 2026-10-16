@@ -97,6 +97,8 @@ MESSAGES: Dict[str, Dict[str, str]] = {
         "err_control_char": "caractère de contrôle dans une valeur : refusé.",
         "err_bad_id": "identifiant USB invalide : {value}",
         "err_no_hash": "le périphérique n'a pas d'empreinte (hash) : refusé.",
+        "err_not_persisted": ("la règle n'apparaît pas dans la liste après son ajout : "
+                              "elle ne survivrait pas à un redémarrage. Rien n'a été débloqué."),
         "err_need_number": "il faut saisir un numéro.",
         "err_no_item": "aucun élément n°{num} dans la liste ci-dessus.",
         # --- types de périphériques / device kinds
@@ -187,6 +189,8 @@ MESSAGES: Dict[str, Dict[str, str]] = {
         "err_control_char": "control character in a value: refused.",
         "err_bad_id": "invalid USB identifier: {value}",
         "err_no_hash": "the device has no fingerprint (hash): refused.",
+        "err_not_persisted": ("the rule does not appear in the list after being added: "
+                              "it would not survive a restart. Nothing was unblocked."),
         "err_need_number": "a number is required.",
         "err_no_item": "no item #{num} in the list above.",
         # --- device kinds
@@ -755,14 +759,24 @@ def cmd_add(args: argparse.Namespace) -> None:
     # EN : "Already allowed" = a rule WITHOUT a port designates this
     #      hardware. A port-bound rule (e.g. the baseline snapshot's) does
     #      not count: it does not follow the key when the port number changes.
-    already = any(
-        r.target == "allow" and not r.via_port and same_device(device, r)
-        for r in list_rules()
-    )
-    if not already:
+    def has_portable_rule() -> bool:
+        return any(
+            r.target == "allow" and not r.via_port and same_device(device, r)
+            for r in list_rules()
+        )
+
+    if not has_portable_rule():
         # FR : écrit dans /etc/usbguard/rules.conf
         # EN : writes into /etc/usbguard/rules.conf
         run_usbguard("append-rule", rule)
+        # FR : On VÉRIFIE avant d'annoncer « définitivement » : on relit les
+        #      règles et on s'assure que la nouvelle y figure. Sinon, on
+        #      s'arrête SANS débloquer ni affirmer quoi que ce soit.
+        # EN : We VERIFY before announcing "permanently": we re-read the
+        #      rules and make sure the new one is there. Otherwise we stop
+        #      WITHOUT unblocking or claiming anything.
+        if not has_portable_rule():
+            raise UsbGuardError(t("err_not_persisted"))
     # FR : débloque tout de suite, sans rebrancher.
     # EN : unblocks right away, no need to re-plug.
     run_usbguard("allow-device", str(device.num))

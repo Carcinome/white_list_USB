@@ -300,16 +300,34 @@ class PortBoundRuleTests(unittest.TestCase):
         self.assertTrue(uw.rule_covers(uw.parse_line(VM_RULE_PORTABLE),
                                        uw.parse_line(VM_DEVICE_MOVED)))
 
-    def _run_add(self, rules):
-        """Exécute cmd_add avec de faux usbguard/saisies ; renvoie les appels.
-        Runs cmd_add with fake usbguard/inputs; returns the calls made.
+    def _run_add(self, rules, persist=True):
+        """Exécute cmd_add avec un faux usbguard ; renvoie (appels, erreur).
+        Runs cmd_add with a fake usbguard; returns (calls, error).
+
+        FR : `persist=True` simule un usbguard qui écrit VRAIMENT la règle
+             (elle apparaît ensuite dans list_rules) ; `False` simule un
+             append-rule sans effet, comme l'ancien bug.
+        EN : `persist=True` simulates a usbguard that REALLY writes the rule
+             (it then shows up in list_rules); `False` simulates an
+             ineffective append-rule, like the old bug.
         """
-        calls = []
+        calls, state = [], list(rules)
         dev = uw.parse_line(VM_DEVICE_MOVED)
-        with mock.patch.object(uw, "list_devices", return_value=[dev]),                 mock.patch.object(uw, "list_rules", return_value=rules),                 mock.patch.object(uw, "run_usbguard",
-                                  side_effect=lambda *a: calls.append(a) or ""),                 mock.patch.object(uw, "audit"),                 mock.patch("builtins.input", side_effect=[uw.t("yes_word"), "o"]),                 redirect_stdout(io.StringIO()):
-            uw.cmd_add(types.SimpleNamespace(number=7))
-        return calls
+
+        def fake_usbguard(*args):
+            calls.append(args)
+            if args[0] == "append-rule" and persist:
+                state.append(uw.parse_line("99: " + args[1]))
+            return ""
+
+        error = None
+        with mock.patch.object(uw, "list_devices", return_value=[dev]),                 mock.patch.object(uw, "list_rules", side_effect=lambda: list(state)),                 mock.patch.object(uw, "run_usbguard", side_effect=fake_usbguard),                 mock.patch.object(uw, "audit"),                 mock.patch("builtins.input", side_effect=[uw.t("yes_word"), "o"]),                 redirect_stdout(io.StringIO()) as out:
+            try:
+                uw.cmd_add(types.SimpleNamespace(number=7))
+            except uw.UsbGuardError as exc:
+                error = exc
+        self.last_output = out.getvalue()
+        return calls, error
 
     def test_add_ecrit_une_regle_si_seule_une_regle_liee_au_port(self):
         """LE BUG CORRIGÉ : une règle liée au port n'empêche plus l'écriture
@@ -317,21 +335,37 @@ class PortBoundRuleTests(unittest.TestCase):
         THE FIXED BUG: a port-bound rule no longer prevents writing the
         portable rule.
         """
-        calls = self._run_add([uw.parse_line(VM_RULE_PORT)])
+        calls, error = self._run_add([uw.parse_line(VM_RULE_PORT)])
+        self.assertIsNone(error)
         verbs = [c[0] for c in calls]
         self.assertIn("append-rule", verbs)
         self.assertIn("allow-device", verbs)
         rule_text = [c for c in calls if c[0] == "append-rule"][0][1]
         self.assertNotIn("via-port", rule_text)
+        self.assertIn("OK", self.last_output)
 
     def test_add_n_ecrit_pas_deux_fois_une_regle_portable(self):
         """Une règle portable existe déjà : pas de doublon, mais on débloque.
         A portable rule already exists: no duplicate, but we unblock.
         """
-        calls = self._run_add([uw.parse_line(VM_RULE_PORTABLE)])
+        calls, error = self._run_add([uw.parse_line(VM_RULE_PORTABLE)])
+        self.assertIsNone(error)
         verbs = [c[0] for c in calls]
         self.assertNotIn("append-rule", verbs)
         self.assertIn("allow-device", verbs)
+
+    def test_add_n_annonce_rien_si_la_regle_n_est_pas_ecrite(self):
+        """LA LEÇON DU « définitivement » FAUX : si la règle n'apparaît pas
+        après l'ajout, erreur ; aucun déblocage, aucun « OK ».
+        THE LESSON OF THE FALSE "permanently": if the rule does not appear
+        after adding, error; no unblocking, no "OK".
+        """
+        calls, error = self._run_add([uw.parse_line(VM_RULE_PORT)], persist=False)
+        self.assertIsNotNone(error)
+        verbs = [c[0] for c in calls]
+        self.assertIn("append-rule", verbs)
+        self.assertNotIn("allow-device", verbs)
+        self.assertNotIn("OK", self.last_output)
 
     def _run_remove(self, before, after):
         calls = []
